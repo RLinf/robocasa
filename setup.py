@@ -12,7 +12,7 @@ lines = [x for x in lines if ".png" not in x]
 long_description = "".join(lines)
 
 setup(
-    name="robocasa",
+    name="rinf-robocasa",
     packages=[package for package in find_packages() if package.startswith("robocasa")],
     install_requires=[
         "numpy==2.2.5",
@@ -40,7 +40,7 @@ setup(
     python_requires=">=3",
     description="RoboCasa365: A Large-Scale Simulation Framework for Training and Benchmarking Generalist Robots",
     author="Soroush Nasiriany, Sepehr Nasiriany, Abhiram Maddukuri, Yuke Zhu",
-    url="https://github.com/robocasa/robocasa",
+    url="https://github.com/RLinf/robocasa",
     author_email="abhicm@utexas.edu",
     version="1.0.1",
     long_description=long_description,

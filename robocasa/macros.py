@@ -7,6 +7,9 @@ To make sure global reference is maintained, should import these settings as:
 `import robocasa.macros as macros`
 """
 
+import importlib.util
+import os
+
 SHOW_SITES = False
 
 # whether to print debugging information
@@ -18,9 +21,18 @@ SPACEMOUSE_PRODUCT_ID = 50741
 
 DATASET_BASE_PATH = None
 
+# load user overrides from ROBOCASA_MACROS_PATH
+_env_macros_path = os.environ.get("ROBOCASA_MACROS_PATH")
 try:
-    from robocasa.macros_private import *
-except ImportError:
+    _spec = importlib.util.spec_from_file_location(
+        "robocasa.macros_private", _env_macros_path
+    )
+    _mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    globals().update(
+        {k: v for k, v in _mod.__dict__.items() if not k.startswith("_")}
+    )
+except Exception:
     from robosuite.utils.log_utils import ROBOSUITE_DEFAULT_LOGGER
 
     import robocasa
@@ -28,5 +40,6 @@ except ImportError:
     ROBOSUITE_DEFAULT_LOGGER.warn("No private macro file found!")
     ROBOSUITE_DEFAULT_LOGGER.warn("It is recommended to use a private macro file")
     ROBOSUITE_DEFAULT_LOGGER.warn(
-        "To setup, run: python {}/scripts/setup_macros.py".format(robocasa.__path__[0])
+        "To setup, set ROBOCASA_MACROS_PATH and run: "
+        "python {}/scripts/setup_macros.py".format(robocasa.__path__[0])
     )
