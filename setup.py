@@ -31,7 +31,8 @@ setup(
         "lxml",
         "hidapi",
         "tianshou==0.4.10",
-        "lerobot==0.3.3",
+        # leave lerobot unpinned; installer pins the git commit
+        "lerobot",
         "gymnasium",
     ],
     eager_resources=["*"],
