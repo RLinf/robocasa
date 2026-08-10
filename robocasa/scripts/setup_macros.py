@@ -20,7 +20,7 @@ if __name__ == "__main__":
     if not macros_private_path:
         raise RuntimeError(
             "ROBOCASA_MACROS_PATH must be set. "
-            "Example: export ROBOCASA_MACROS_PATH=~/.robocasa/macros_private.py"
+            "Example: export ROBOCASA_MACROS_PATH=/path/to/macros_private.py"
         )
     os.makedirs(os.path.dirname(macros_private_path), exist_ok=True)
 
