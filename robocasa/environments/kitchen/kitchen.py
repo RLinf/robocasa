@@ -1235,7 +1235,12 @@ class Kitchen(ManipulationEnv, metaclass=KitchenEnvMeta):
         textures = asset.findall("texture")
         all_elements = meshes + textures
 
-        robocasa_path_split = os.path.split(robocasa.__file__)[0].split("/")
+        # robocasa.models.assets_root honors ROBOCASA_ASSETS_PATH (full asset
+        # zoo) and falls back to <pkg>/robocasa/models/assets. robocasa.__file__
+        # always points at the wheel and ignores ROBOCASA_ASSETS_PATH — using
+        # it here breaks mesh resolution when the wheel's bundled assets are
+        # partial stubs.
+        assets_root_path_split = robocasa.models.assets_root.split("/")
 
         # replace robocasa-specific asset paths
         for elem in all_elements:
@@ -1267,7 +1272,11 @@ class Kitchen(ManipulationEnv, metaclass=KitchenEnvMeta):
                     raise ValueError
 
                 ind = max(check_lst)  # last occurrence index
-                new_path_split = robocasa_path_split + old_path_split[ind + 1 :]
+                # old_path_split[ind+1:ind+3] is ["models", "assets"] (guaranteed
+                # by the substring filter above); skip them and append the
+                # asset-relative tail (fixtures/xxx.obj, textures/yyy.png, ...)
+                # onto assets_root.
+                new_path_split = assets_root_path_split + old_path_split[ind + 3 :]
 
                 new_path = "/".join(new_path_split)
                 elem.set("file", new_path)
