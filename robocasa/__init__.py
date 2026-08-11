@@ -1001,30 +1001,42 @@ from robosuite.models.grippers import ALL_GRIPPERS
 from robosuite.robots import ALL_ROBOTS
 
 import mujoco
-
-assert (
-    mujoco.__version__ == "3.3.1"
-), "MuJoCo version must be 3.3.1. Please run pip install mujoco==3.3.1"
-
 import numpy
-
-assert numpy.__version__ in [
-    "2.2.5",
-], "numpy version must be 2.2.5. Please install this version."
-
 import robosuite
 
-robosuite_version = [int(e) for e in robosuite.__version__.split(".")]
-robosuite_check = True
-if robosuite_version[0] < 1:
-    robosuite_check = False
-if robosuite_version[0] == 1 and robosuite_version[1] < 5:
-    robosuite_check = False
-if robosuite_version[0] == 1 and robosuite_version[1] == 5 and robosuite_version[2] < 2:
-    robosuite_check = False
-assert (
-    robosuite_check
-), "robosuite version must be >=1.5.2 Please install the correct version"
+
+def _version_tuple(version):
+    """Leading numeric components of a version string, e.g. '3.3.6' -> (3, 3, 6)."""
+    parts = []
+    for chunk in version.split("."):
+        digits = ""
+        for char in chunk:
+            if not char.isdigit():
+                break
+            digits += char
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
+# Version floors rather than exact pins: the packaging metadata (see setup.py)
+# owns the supported ranges, so these checks only catch an environment that
+# resolved below the minimum this code was written against. Exact pins here
+# used to force every consumer to a single numpy/mujoco build, which made
+# RoboCasa impossible to co-install with anything else.
+_MIN_VERSIONS = {
+    "mujoco": ((3, 3), mujoco.__version__),
+    "numpy": ((1, 24), numpy.__version__),
+    "robosuite": ((1, 5, 2), robosuite.__version__),
+}
+for _name, (_minimum, _found) in _MIN_VERSIONS.items():
+    assert _version_tuple(_found) >= _minimum, (
+        "%s>=%s is required, found %s. Reinstall with "
+        "'pip install rpent-robocasa365' to get a supported set."
+        % (_name, ".".join(str(p) for p in _minimum), _found)
+    )
+del _name, _minimum, _found, _MIN_VERSIONS
 
 __version__ = "1.0.1"
 __logo__ = """
