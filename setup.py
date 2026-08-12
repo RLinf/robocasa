@@ -16,9 +16,14 @@ setup(
     packages=[package for package in find_packages() if package.startswith("robocasa")],
     # Runtime requirements only, as version floors. Anything used solely by
     # robocasa/scripts or robocasa/demos belongs in extras_require.
+    entry_points={
+        "console_scripts": [
+            "robocasa-download-assets = robocasa.scripts.download_assets_cli:main",
+        ],
+    },
     install_requires=[
         # Necessary but not sufficient: RoboCasa365 needs robosuite master,
-        # which reports the same version. __init__.py checks the APIs.
+        # which reports the same version but carries APIs the release lacks.
         "robosuite>=1.5.2",
         "mujoco>=3.3,<3.10",  # 3.10 changed mj_fullM; breaks robosuite controllers
         # Floor only: no robocasa module uses a numpy-major-specific API, so

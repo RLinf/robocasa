@@ -1000,87 +1000,9 @@ from robosuite.environments import ALL_ENVIRONMENTS
 from robosuite.models.grippers import ALL_GRIPPERS
 from robosuite.robots import ALL_ROBOTS
 
-import mujoco
-import numpy
-import robosuite
-
-
-def _version_tuple(version):
-    """Leading numeric components, e.g. '3.3.6' -> (3, 3, 6)."""
-    parts = []
-    for chunk in version.split("."):
-        digits = ""
-        for char in chunk:
-            if not char.isdigit():
-                break
-            digits += char
-        if not digits:
-            break
-        parts.append(int(digits))
-    return tuple(parts)
-
-
-# Floors, not pins: setup.py owns the supported ranges.
-_MIN_VERSIONS = {
-    "mujoco": ((3, 3), mujoco.__version__),
-    "numpy": ((1, 24), numpy.__version__),
-    "robosuite": ((1, 5, 2), robosuite.__version__),
-}
-for _name, (_minimum, _found) in _MIN_VERSIONS.items():
-    assert _version_tuple(_found) >= _minimum, (
-        "%s>=%s is required, found %s. Reinstall with "
-        "'pip install rlinf-robocasa365' to get a supported set."
-        % (_name, ".".join(str(p) for p in _minimum), _found)
-    )
-del _name, _minimum, _found, _MIN_VERSIONS
-
-
-def _assert_robosuite_is_supported():
-    """Fail at import on a robosuite that cannot run RoboCasa365.
-
-    Both master and the 1.5.2 release report ``__version__ == "1.5.2"``, so
-    packaging metadata cannot tell them apart; without this the mismatch
-    surfaces as a TypeError deep inside env construction.
-    """
-    import inspect
-
-    from robosuite.environments.base import MujocoEnv
-    from robosuite.models.tasks import ManipulationTask
-
-    missing = []
-    if "load_model_on_init" not in inspect.signature(MujocoEnv.__init__).parameters:
-        missing.append("MujocoEnv(load_model_on_init=...)")
-    if "enable_multiccd" not in inspect.signature(ManipulationTask.__init__).parameters:
-        missing.append("ManipulationTask(enable_multiccd=...)")
-    try:
-        from robosuite.controllers.parts.controller_factory import (
-            mobile_base_controller_factory,
-        )
-
-        source = inspect.getsource(mobile_base_controller_factory)
-        if "JOINT_VELOCITY_LEGACY" not in source:
-            missing.append("JOINT_VELOCITY_LEGACY mobile-base controller")
-    except Exception:  # pragma: no cover - unexpected robosuite layout
-        pass
-
-    if missing:
-        raise ImportError(
-            "This robosuite (%s, at %s) is missing APIs RoboCasa365 requires:\n"
-            "  - %s\n"
-            "They exist on the robosuite development line but not in the 1.5.2\n"
-            "release, and both report __version__ == '1.5.2', so pip cannot\n"
-            "distinguish them. Install robosuite from source:\n"
-            "  pip install 'robosuite @ git+https://github.com/ARISE-Initiative/"
-            "robosuite.git@master'"
-            % (
-                robosuite.__version__,
-                getattr(robosuite, "__file__", "unknown"),
-                "\n  - ".join(missing),
-            )
-        )
-
-
-_assert_robosuite_is_supported()
+import mujoco  # noqa: F401
+import numpy  # noqa: F401
+import robosuite  # noqa: F401
 
 __version__ = "1.0.1"
 __logo__ = """
