@@ -1,6 +1,7 @@
 import os
-import time
+import tempfile
 import xml.etree.ElementTree as ET
+from contextlib import contextmanager
 
 import numpy as np
 import robosuite
@@ -10,7 +11,33 @@ from robosuite.models.base import MujocoXML
 from robosuite.utils.mjcf_utils import array_to_string, string_to_array, find_elements
 
 
+@contextmanager
+def temporary_mjcf_xml(xml_str):
+    """Keep transformed XML out of asset directories, including on failure."""
+    stream = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", suffix=".xml", delete=False
+    )
+    path = stream.name
+    try:
+        with stream:
+            stream.write(xml_str)
+        yield path
+    finally:
+        os.remove(path)
+
+
 class MujocoXMLObjectRobocasa(MujocoXMLObject):
+    def __init__(self, *args, asset_source_path=None, **kwargs):
+        self._asset_source_path = asset_source_path
+        super().__init__(*args, **kwargs)
+
+    def resolve_asset_dependency(self):
+        # The parser reads a temporary XML, but dependencies still belong to
+        # the original asset directory. Preserve the upstream resolver itself.
+        if self._asset_source_path is not None:
+            self.folder = os.path.dirname(os.path.abspath(self._asset_source_path))
+        super().resolve_asset_dependency()
+
     def set_scale(self, scale, obj=None):
         """
         Scales each geom, mesh, site, and body.
@@ -237,32 +264,22 @@ class MJCFObject(MujocoXMLObjectRobocasa):
         # read default xml
         xml_path = mjcf_path
         self.mjcf_path = mjcf_path
-        folder = os.path.dirname(xml_path)
         tree = ET.parse(xml_path)
         root = tree.getroot()
 
         # write modified xml (and make sure to postprocess any paths just in case)
         xml_str = ET.tostring(root, encoding="utf8").decode("utf8")
         xml_str = self.postprocess_model_xml(xml_str)
-        time_str = str(time.time()).replace(".", "_")
-        new_xml_path = os.path.join(folder, "{}_{}.xml".format(time_str, os.getpid()))
-        f = open(new_xml_path, "w")
-        f.write(xml_str)
-        f.close()
-
-        # initialize object with new xml we wrote
-        super().__init__(
-            fname=new_xml_path,
-            name=name,
-            joints=[dict(type="free", damping="0.0005")],
-            obj_type="all",
-            duplicate_collision_geoms=False,
-            scale=scale,
-        )
-
-        # clean up xml - we don't need it anymore
-        if os.path.exists(new_xml_path):
-            os.remove(new_xml_path)
+        with temporary_mjcf_xml(xml_str) as new_xml_path:
+            super().__init__(
+                fname=new_xml_path,
+                asset_source_path=xml_path,
+                name=name,
+                joints=[dict(type="free", damping="0.0005")],
+                obj_type="all",
+                duplicate_collision_geoms=False,
+                scale=scale,
+            )
 
         self._regions = dict()
         self._setup_region_dict()
