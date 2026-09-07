@@ -1,10 +1,12 @@
 import argparse
+import filecmp
 import json
 import os
 import shutil
+import tempfile
 import urllib.request
 from pathlib import Path
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
 
 from termcolor import colored
 from tqdm import tqdm
@@ -77,6 +79,43 @@ class DownloadProgressBar(tqdm):
         if tsize is not None:
             self.total = tsize
         self.update(b * bsize - self.n)
+
+
+def copy_missing_files(source, destination):
+    """Merge an asset tree without replacing existing user content."""
+    source, destination = Path(source), Path(destination)
+    files = [path for path in source.rglob("*") if path.is_file()]
+    for path in files:
+        target = destination / path.relative_to(source)
+        if target.exists() and not (
+            target.is_file() and filecmp.cmp(path, target, shallow=False)
+        ):
+            raise FileExistsError(f"Asset differs from the installed file: {target}")
+    for path in files:
+        target = destination / path.relative_to(source)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not target.exists():
+            with path.open("rb") as src, target.open("xb") as dst:
+                shutil.copyfileobj(src, dst)
+
+
+def download_is_complete(url, folder):
+    """Only skip a download whose installed file inventory is still present."""
+    folder = Path(folder)
+    try:
+        record = json.loads((folder / ".robocasa-download.json").read_text())
+        if record.get("url") != url or not record.get("files"):
+            return False
+        for name, size in record["files"].items():
+            relative = Path(name)
+            if relative.is_absolute() or ".." in relative.parts:
+                return False
+            path = folder.parent / relative
+            if not path.is_file() or path.stat().st_size != size:
+                return False
+        return True
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
 
 
 def url_is_alive(url):
@@ -181,35 +220,65 @@ def download_and_extract_zip(
             print(colored("Skipping.\n", "yellow"))
             return
 
-    download_success = False
+    partial_path = download_path + ".part"
+    last_error = None
     for i in range(3):
         try:
             download_url(
                 url=url,
                 download_dir=download_dir,
-                fname=os.path.basename(download_path),
+                fname=os.path.basename(partial_path),
                 check_overwrite=False,
             )
-            download_success = True
+            with ZipFile(partial_path) as archive:
+                bad_member = archive.testzip()
+                if bad_member is not None:
+                    raise BadZipFile(f"CRC check failed: {bad_member}")
             break
-        except Exception:
+        except Exception as exc:
+            last_error = exc
             print("Error downloading after try #{}".format(i + 1))
-
-    if download_success is False:
-        print("Failed to download. Try again...")
-        return
+    else:
+        raise RuntimeError(
+            f"Asset download failed after 3 attempts: {folder}"
+        ) from last_error
 
     print(colored("Extracting...", "yellow"))
-    with ZipFile(download_path, "r") as zip_ref:
-        zip_ref.extractall(path=download_dir)
-
-    # delete zip file
-    os.remove(download_path)
+    with tempfile.TemporaryDirectory(
+        prefix=".robocasa-extract-", dir=download_dir
+    ) as stage:
+        with ZipFile(partial_path) as archive:
+            for member in archive.infolist():
+                path = Path(member.filename)
+                if path.is_absolute() or ".." in path.parts:
+                    raise BadZipFile(f"Invalid asset path: {member.filename}")
+            archive.extractall(stage)
+        payload = Path(stage) / Path(folder).name
+        if not payload.is_dir() or not any(
+            path.is_file() for path in payload.rglob("*")
+        ):
+            raise BadZipFile(f"Archive has no payload for {Path(folder).name}")
+        inventory = {
+            str(path.relative_to(stage)): path.stat().st_size
+            for path in Path(stage).rglob("*")
+            if path.is_file()
+        }
+        copy_missing_files(stage, download_dir)
+        marker = Path(folder) / ".robocasa-download.json"
+        out = tempfile.NamedTemporaryFile(mode="w", dir=folder, delete=False)
+        temporary_marker = Path(out.name)
+        try:
+            with out:
+                json.dump({"url": url, "files": inventory}, out, sort_keys=True)
+            temporary_marker.replace(marker)
+        finally:
+            temporary_marker.unlink(missing_ok=True)
+    os.remove(partial_path)
 
     print(colored("Done.\n", "yellow"))
 
 
-def download_kitchen_assets(types):
+def download_kitchen_assets(types, registry=None):
     ans = input("The script will download ~10 Gb of data. Proceed? (y/n) ")
     if ans == "y":
         print("Proceeding...")
@@ -217,7 +286,8 @@ def download_kitchen_assets(types):
         print("Aborting.")
         return
 
-    for ds_name, config in DOWNLOAD_ASSET_REGISTRY.items():
+    registry = DOWNLOAD_ASSET_REGISTRY if registry is None else registry
+    for ds_name, config in registry.items():
         if types is None:
             pass
         elif "all" in types:

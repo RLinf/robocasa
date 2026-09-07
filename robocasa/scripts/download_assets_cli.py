@@ -7,13 +7,17 @@ can be shared between virtualenvs.
 
 import argparse
 import builtins
+import filecmp
 import os
 import shutil
 import sys
+from importlib.metadata import files as distribution_files
+from pathlib import Path
 
 import robocasa
 from robocasa.scripts.download_kitchen_assets import (
     DOWNLOAD_ASSET_REGISTRY,
+    download_is_complete,
     download_kitchen_assets,
 )
 
@@ -39,12 +43,49 @@ def _retarget_registry(assets_path):
     The registry hardcodes the in-package asset directory, so without this
     everything lands in site-packages and has to be moved by hand.
     """
-    for entry in DOWNLOAD_ASSET_REGISTRY.values():
+    registry = {name: dict(entry) for name, entry in DOWNLOAD_ASSET_REGISTRY.items()}
+    for entry in registry.values():
         folder = os.path.abspath(entry["folder"])
-        if folder.startswith(PACKAGE_ASSETS):
+        if os.path.commonpath((folder, PACKAGE_ASSETS)) == PACKAGE_ASSETS:
             entry["folder"] = os.path.join(
                 assets_path, os.path.relpath(folder, PACKAGE_ASSETS)
             )
+    return registry
+
+
+def _copy_bundled_assets(assets_path):
+    """Copy only package-recorded assets, not earlier in-package downloads."""
+    prefix = Path("robocasa/models/assets")
+    entries = distribution_files("rlinf-robocasa365") or ()
+    # PEP 660 editable wheels list only the import hook in RECORD. Setuptools
+    # keeps their package-data inventory in the source tree's SOURCES.txt.
+    if not any(Path(entry).is_relative_to(prefix) for entry in entries):
+        sources = (
+            Path(PACKAGE_ASSETS).parents[2] / "rlinf_robocasa365.egg-info/SOURCES.txt"
+        )
+        if sources.is_file():
+            entries = sources.read_text(encoding="utf-8").splitlines()
+    relative_paths = [
+        Path(entry).relative_to(prefix)
+        for entry in entries
+        if Path(entry).is_relative_to(prefix) and ".." not in Path(entry).parts
+    ]
+    if not relative_paths:
+        raise RuntimeError(
+            "Bundled asset inventory missing; install a RoboCasa wheel first"
+        )
+    for relative in relative_paths:
+        source = Path(PACKAGE_ASSETS) / relative
+        target = Path(assets_path) / relative
+        if target.exists():
+            if not target.is_file() or not filecmp.cmp(source, target, shallow=False):
+                raise FileExistsError(
+                    f"Bundled asset differs from existing file: {target}"
+                )
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with source.open("rb") as src, target.open("xb") as dst:
+                shutil.copyfileobj(src, dst)
 
 
 def _write_macros(macros_path, force):
@@ -100,7 +141,10 @@ def main(argv=None):
         "--no-assets", action="store_true", help="only do the macro setup"
     )
     parser.add_argument(
-        "-y", "--yes", action="store_true", help="answer the download prompts for ~10 GB"
+        "-y",
+        "--yes",
+        action="store_true",
+        help="answer the download prompts for ~10 GB",
     )
     args = parser.parse_args(argv)
 
@@ -111,17 +155,16 @@ def main(argv=None):
         _write_macros(macros_path, args.force_macros)
 
     if not args.no_assets:
+        registry = _retarget_registry(assets_path)
         if assets_path != PACKAGE_ASSETS:
             os.makedirs(assets_path, exist_ok=True)
-            _retarget_registry(assets_path)
+            _copy_bundled_assets(assets_path)
         if args.skip_existing:
-            for name, entry in list(DOWNLOAD_ASSET_REGISTRY.items()):
-                if os.path.isdir(entry["folder"]) and os.listdir(entry["folder"]):
-                    print(f"skipping {name}: {entry['folder']} already populated")
-                    DOWNLOAD_ASSET_REGISTRY.pop(name)
-        types = args.type
-        if "all" in types:
-            types = list(DOWNLOAD_ASSET_REGISTRY)
+            for name, entry in list(registry.items()):
+                if download_is_complete(entry["url"], entry["folder"]):
+                    print(f"skipping {name}: installed download verified")
+                    registry.pop(name)
+        types = [name for name in registry if "all" in args.type or name in args.type]
         if not types:
             print("nothing left to download")
         else:
@@ -131,7 +174,7 @@ def main(argv=None):
                 # makes this usable from a script or Dockerfile.
                 builtins.input = lambda *a, **k: "y"
             try:
-                download_kitchen_assets(types)
+                download_kitchen_assets(types, registry=registry)
             finally:
                 builtins.input = original_input
         print(f"assets: {assets_path}")
