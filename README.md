@@ -65,6 +65,24 @@ RoboCasa works across all major computing platforms. The easiest way to set up i
    ```
 
 -------
+## External Asset Installation
+
+The `rpent-robocasa365` distribution provides an installer for an external,
+shareable asset directory:
+
+```sh
+robocasa-download-assets --assets-path ~/.robocasa/assets --no-macros -y
+export ROBOCASA_ASSETS_PATH=~/.robocasa/assets
+```
+
+It installs both the six downloaded collections and the package's bundled
+scene, arena and fixture files. Existing different files are reported as
+conflicts instead of overwritten. `--skip-existing` verifies the file
+inventory recorded after a successful download; nonempty directories and
+fixture skeletons alone are not complete downloads. Interrupted downloads
+must complete before running environments. Official attribution files are
+preserved. The local completion record is not a publisher-provided checksum.
+
 ## Basic Usage
 
 ### Gym wrapper

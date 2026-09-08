@@ -60,6 +60,11 @@ setup(
     },
     eager_resources=["*"],
     include_package_data=True,
+    entry_points={
+        "console_scripts": [
+            "robocasa-download-assets=robocasa.scripts.download_assets_cli:main",
+        ],
+    },
     python_requires=">=3.10",
     description=(
         "RoboCasa365: A Large-Scale Simulation Framework for Training and "
