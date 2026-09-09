@@ -7,7 +7,6 @@ can be shared between virtualenvs.
 
 import argparse
 import builtins
-import filecmp
 import os
 import shutil
 import sys
@@ -17,6 +16,7 @@ from pathlib import Path
 import robocasa
 from robocasa.scripts.download_kitchen_assets import (
     DOWNLOAD_ASSET_REGISTRY,
+    copy_missing_files,
     download_is_complete,
     download_kitchen_assets,
 )
@@ -53,7 +53,7 @@ def _retarget_registry(assets_path):
     return registry
 
 
-def _copy_bundled_assets(assets_path):
+def _copy_bundled_assets(assets_path, *, overwrite=False):
     """Copy only package-recorded assets, not earlier in-package downloads."""
     prefix = Path("robocasa/models/assets")
     entries = distribution_files("rpent-robocasa365") or ()
@@ -74,18 +74,9 @@ def _copy_bundled_assets(assets_path):
         raise RuntimeError(
             "Bundled asset inventory missing; install a RoboCasa wheel first"
         )
-    for relative in relative_paths:
-        source = Path(PACKAGE_ASSETS) / relative
-        target = Path(assets_path) / relative
-        if target.exists():
-            if not target.is_file() or not filecmp.cmp(source, target, shallow=False):
-                raise FileExistsError(
-                    f"Bundled asset differs from existing file: {target}"
-                )
-        else:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with source.open("rb") as src, target.open("xb") as dst:
-                shutil.copyfileobj(src, dst)
+    copy_missing_files(
+        PACKAGE_ASSETS, assets_path, overwrite=overwrite, relative_paths=relative_paths
+    )
 
 
 def _write_macros(macros_path, force):
@@ -132,6 +123,11 @@ def main(argv=None):
         help="leave already-downloaded asset folders alone",
     )
     parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace conflicting resource files; takes precedence over --skip-existing",
+    )
+    parser.add_argument(
         "--no-macros", action="store_true", help="do not write macros_private.py"
     )
     parser.add_argument(
@@ -158,8 +154,8 @@ def main(argv=None):
         registry = _retarget_registry(assets_path)
         if assets_path != PACKAGE_ASSETS:
             os.makedirs(assets_path, exist_ok=True)
-            _copy_bundled_assets(assets_path)
-        if args.skip_existing:
+            _copy_bundled_assets(assets_path, overwrite=args.overwrite)
+        if args.skip_existing and not args.overwrite:
             for name, entry in list(registry.items()):
                 if download_is_complete(entry["url"], entry["folder"]):
                     print(f"skipping {name}: installed download verified")
@@ -174,7 +170,9 @@ def main(argv=None):
                 # makes this usable from a script or Dockerfile.
                 builtins.input = lambda *a, **k: "y"
             try:
-                download_kitchen_assets(types, registry=registry)
+                download_kitchen_assets(
+                    types, registry=registry, overwrite=args.overwrite
+                )
             finally:
                 builtins.input = original_input
         print(f"assets: {assets_path}")

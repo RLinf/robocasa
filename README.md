@@ -83,6 +83,15 @@ fixture skeletons alone are not complete downloads. Interrupted downloads
 must complete before running environments. Official attribution files are
 preserved. The local completion record is not a publisher-provided checksum.
 
+Resource files are published atomically; an interrupted copy does not leave a
+half-written final file. To repair conflicting files left by an earlier install,
+rerun the same command with `--overwrite`. This explicitly replaces resource
+files in the installation scope, takes precedence over `--skip-existing`, and
+does not remove unrelated files or whole directories. Without it, different
+existing content remains protected. The destination filesystem must support
+hard links for atomic no-overwrite publication. Catchable errors clean temporary
+files; a killed process may leave temporary files, but they do not block retries.
+
 ## Basic Usage
 
 ### Gym wrapper

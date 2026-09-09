@@ -81,22 +81,68 @@ class DownloadProgressBar(tqdm):
         self.update(b * bsize - self.n)
 
 
-def copy_missing_files(source, destination):
-    """Merge an asset tree without replacing existing user content."""
+def _needs_install(source, target, overwrite):
+    if not target.exists() and not target.is_symlink():
+        return True
+    if target.is_symlink() or not target.is_file():
+        raise FileExistsError(f"Asset destination is not a regular file: {target}")
+    if overwrite:
+        return True
+    if source.stat().st_size == target.stat().st_size and filecmp.cmp(
+        source, target, shallow=False
+    ):
+        return False
+    raise FileExistsError(
+        f"Asset differs from the installed file: {target}. "
+        "Rerun the same robocasa-download-assets command with --overwrite "
+        "to replace conflicting resource files."
+    )
+
+
+def _publish_file(complete, target, overwrite):
+    """Publish a complete file without exposing a partial destination."""
+    if overwrite:
+        os.replace(complete, target)
+    else:
+        try:
+            # Unlike replace(), link() cannot overwrite a concurrently created file.
+            os.link(complete, target)
+        except FileExistsError:
+            _needs_install(complete, target, overwrite=False)
+        complete.unlink()
+
+
+def _copy_file_atomically(source, target, overwrite):
+    target.parent.mkdir(parents=True, exist_ok=True)
+    out = tempfile.NamedTemporaryFile(
+        mode="wb", prefix=".robocasa-copy-", dir=target.parent, delete=False
+    )
+    temporary = Path(out.name)
+    try:
+        with out, source.open("rb") as src:
+            shutil.copyfileobj(src, out)
+            out.flush()
+            os.fsync(out.fileno())
+        shutil.copymode(source, temporary)
+        _publish_file(temporary, target, overwrite)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def copy_missing_files(source, destination, *, overwrite=False, relative_paths=None):
+    """Install complete files; existing different content requires opt-in."""
     source, destination = Path(source), Path(destination)
-    files = [path for path in source.rglob("*") if path.is_file()]
-    for path in files:
-        target = destination / path.relative_to(source)
-        if target.exists() and not (
-            target.is_file() and filecmp.cmp(path, target, shallow=False)
-        ):
-            raise FileExistsError(f"Asset differs from the installed file: {target}")
-    for path in files:
-        target = destination / path.relative_to(source)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if not target.exists():
-            with path.open("rb") as src, target.open("xb") as dst:
-                shutil.copyfileobj(src, dst)
+    if relative_paths is None:
+        relative_paths = [
+            path.relative_to(source) for path in source.rglob("*") if path.is_file()
+        ]
+    pending = [
+        path
+        for path in relative_paths
+        if _needs_install(source / path, destination / path, overwrite)
+    ]
+    for path in pending:
+        _copy_file_atomically(source / path, destination / path, overwrite)
 
 
 def download_is_complete(url, folder):
@@ -183,6 +229,7 @@ def download_and_extract_zip(
     prompt_before_download=False,
     delete_old_folder=False,
     message="Downloading...",
+    overwrite=False,
 ):
     assert url.endswith(".zip")
 
@@ -263,8 +310,9 @@ def download_and_extract_zip(
             for path in Path(stage).rglob("*")
             if path.is_file()
         }
-        copy_missing_files(stage, download_dir)
         marker = Path(folder) / ".robocasa-download.json"
+        marker.unlink(missing_ok=True)
+        copy_missing_files(stage, download_dir, overwrite=overwrite)
         out = tempfile.NamedTemporaryFile(mode="w", dir=folder, delete=False)
         temporary_marker = Path(out.name)
         try:
@@ -278,7 +326,7 @@ def download_and_extract_zip(
     print(colored("Done.\n", "yellow"))
 
 
-def download_kitchen_assets(types, registry=None):
+def download_kitchen_assets(types, registry=None, *, overwrite=False):
     ans = input("The script will download ~10 Gb of data. Proceed? (y/n) ")
     if ans == "y":
         print("Proceeding...")
@@ -296,11 +344,14 @@ def download_kitchen_assets(types, registry=None):
         else:
             if ds_name not in types:
                 continue
-        download_and_extract_zip(**config)
+        download_and_extract_zip(**config, overwrite=overwrite)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--overwrite", action="store_true", help="replace conflicting resource files"
+    )
     parser.add_argument(
         "--type",
         type=str,
@@ -312,4 +363,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
     types = args.type
 
-    download_kitchen_assets(types)
+    download_kitchen_assets(types, overwrite=args.overwrite)
