@@ -108,7 +108,8 @@ def _publish_file(complete, target, overwrite):
             # Unlike replace(), link() cannot overwrite a concurrently created file.
             os.link(complete, target)
         except FileExistsError:
-            _needs_install(complete, target, overwrite=False)
+            if _needs_install(complete, target, overwrite=False):
+                raise
         complete.unlink()
 
 
@@ -129,7 +130,9 @@ def _copy_file_atomically(source, target, overwrite):
         temporary.unlink(missing_ok=True)
 
 
-def copy_missing_files(source, destination, *, overwrite=False, relative_paths=None):
+def copy_missing_files(
+    source, destination, *, overwrite=False, relative_paths=None, move=False
+):
     """Install complete files; existing different content requires opt-in."""
     source, destination = Path(source), Path(destination)
     if relative_paths is None:
@@ -142,7 +145,12 @@ def copy_missing_files(source, destination, *, overwrite=False, relative_paths=N
         if _needs_install(source / path, destination / path, overwrite)
     ]
     for path in pending:
-        _copy_file_atomically(source / path, destination / path, overwrite)
+        target = destination / path
+        if move:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _publish_file(source / path, target, overwrite)
+        else:
+            _copy_file_atomically(source / path, target, overwrite)
 
 
 def download_is_complete(url, folder):
@@ -295,24 +303,28 @@ def download_and_extract_zip(
         prefix=".robocasa-extract-", dir=download_dir
     ) as stage:
         with ZipFile(partial_path) as archive:
+            inventory = {}
             for member in archive.infolist():
                 path = Path(member.filename)
                 if path.is_absolute() or ".." in path.parts:
                     raise BadZipFile(f"Invalid asset path: {member.filename}")
+                if not member.is_dir():
+                    inventory[str(path)] = member.file_size
+            if not any(
+                len(Path(name).parts) > 1 and Path(name).parts[0] == Path(folder).name
+                for name in inventory
+            ):
+                raise BadZipFile(f"Archive has no payload for {Path(folder).name}")
             archive.extractall(stage)
-        payload = Path(stage) / Path(folder).name
-        if not payload.is_dir() or not any(
-            path.is_file() for path in payload.rglob("*")
-        ):
-            raise BadZipFile(f"Archive has no payload for {Path(folder).name}")
-        inventory = {
-            str(path.relative_to(stage)): path.stat().st_size
-            for path in Path(stage).rglob("*")
-            if path.is_file()
-        }
         marker = Path(folder) / ".robocasa-download.json"
         marker.unlink(missing_ok=True)
-        copy_missing_files(stage, download_dir, overwrite=overwrite)
+        copy_missing_files(
+            stage,
+            download_dir,
+            overwrite=overwrite,
+            relative_paths=inventory,
+            move=True,
+        )
         out = tempfile.NamedTemporaryFile(mode="w", dir=folder, delete=False)
         temporary_marker = Path(out.name)
         try:

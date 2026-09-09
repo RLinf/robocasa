@@ -1,7 +1,7 @@
 """Small offline fixtures for the public asset installer (no simulator)."""
 
-import importlib.util
 import errno
+import importlib.util
 import json
 import shutil
 import sys
@@ -125,10 +125,10 @@ def test_existing_static_content_is_not_replaced(installer, tmp_path):
     target = tmp_path / "external"
     path = target / "arenas/empty.xml"
     path.parent.mkdir(parents=True)
-    path.write_text("user scene")
+    path.write_text("userscene")  # Same size as the bundled XML, different content.
     with pytest.raises(FileExistsError, match="differs"):
         cli._copy_bundled_assets(target)
-    assert path.read_text() == "user scene"
+    assert path.read_text() == "userscene"
 
 
 def test_download_merge_rejects_conflicts_before_copying(installer, tmp_path):
@@ -291,3 +291,93 @@ def test_overwrite_failure_invalidates_completion_marker(installed_assets, monke
     assert downloader.download_is_complete(
         "https://example.org/fixtures.zip", target / "fixtures"
     )
+
+
+@pytest.mark.parametrize("overwrite", [False, True])
+def test_download_publishes_staged_inodes_without_copying_or_tree_scans(
+    installed_assets, tmp_path, monkeypatch, overwrite
+):
+    downloader, _, _, _, _, _ = installed_assets
+    target = tmp_path / "fresh" / "fixtures"
+    if overwrite:
+        asset = target / "object/model.xml"
+        asset.parent.mkdir(parents=True)
+        asset.write_text("old")
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("download publication must use the ZIP inventory and move files")
+
+    original_publish = downloader._publish_file
+    published = []
+
+    def publish(source, destination, replace):
+        inode = source.stat().st_ino
+        original_publish(source, destination, replace)
+        assert destination.stat().st_ino == inode
+        assert not source.exists()
+        published.append(destination)
+
+    monkeypatch.setattr(downloader, "_copy_file_atomically", unexpected)
+    monkeypatch.setattr(Path, "rglob", unexpected)
+    monkeypatch.setattr(downloader, "_publish_file", publish)
+    downloader.download_and_extract_zip(
+        "https://example.org/fixtures.zip",
+        target,
+        check_folder_exists=False,
+        overwrite=overwrite,
+    )
+    assert len(published) == 2
+    assert downloader.download_is_complete("https://example.org/fixtures.zip", target)
+    assert (target.parent / "README.md").read_text() == "Official attribution\n"
+
+
+def test_completed_collection_skips_download_and_payload_comparison(
+    installed_assets, monkeypatch
+):
+    downloader, cli, bundled, _, args, calls = installed_assets
+    original_compare = downloader.filecmp.cmp
+
+    def compare(source, target, **kwargs):
+        assert Path(source).is_relative_to(bundled)
+        return original_compare(source, target, **kwargs)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("verified collections must not be downloaded again")
+
+    monkeypatch.setattr(downloader.filecmp, "cmp", compare)
+    monkeypatch.setattr(downloader, "download_url", unexpected)
+    assert cli.main(args) == 0
+    assert len(calls) == 1
+
+
+def test_size_mismatch_does_not_read_both_files(installer, tmp_path, monkeypatch):
+    downloader, cli, _ = installer
+    target = tmp_path / "external"
+    asset = target / "arenas/empty.xml"
+    asset.parent.mkdir(parents=True)
+    asset.write_text("different size")
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("size mismatch must not perform a deep comparison")
+
+    monkeypatch.setattr(downloader.filecmp, "cmp", unexpected)
+    with pytest.raises(FileExistsError, match="--overwrite"):
+        cli._copy_bundled_assets(target)
+
+
+@pytest.mark.parametrize("kind", ["directory", "symlink"])
+def test_overwrite_rejects_non_regular_destinations(installer, tmp_path, kind):
+    _, cli, _ = installer
+    target = tmp_path / "external"
+    asset = target / "arenas/empty.xml"
+    asset.parent.mkdir(parents=True)
+    unrelated = tmp_path / "user.txt"
+    unrelated.write_text("keep me")
+    if kind == "directory":
+        asset.mkdir()
+    else:
+        asset.symlink_to(unrelated)
+    with pytest.raises(FileExistsError, match="not a regular file"):
+        cli._copy_bundled_assets(target, overwrite=True)
+    assert unrelated.read_text() == "keep me"
+    assert asset.is_dir() if kind == "directory" else asset.is_symlink()
