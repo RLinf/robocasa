@@ -1,10 +1,12 @@
 import argparse
+import filecmp
 import json
 import os
 import shutil
+import tempfile
 import urllib.request
 from pathlib import Path
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
 
 from termcolor import colored
 from tqdm import tqdm
@@ -79,6 +81,97 @@ class DownloadProgressBar(tqdm):
         self.update(b * bsize - self.n)
 
 
+def _needs_install(source, target, overwrite):
+    if not target.exists() and not target.is_symlink():
+        return True
+    if target.is_symlink() or not target.is_file():
+        raise FileExistsError(f"Asset destination is not a regular file: {target}")
+    if overwrite:
+        return True
+    if source.stat().st_size == target.stat().st_size and filecmp.cmp(
+        source, target, shallow=False
+    ):
+        return False
+    raise FileExistsError(
+        f"Asset differs from the installed file: {target}. "
+        "Rerun the same robocasa-download-assets command with --overwrite "
+        "to replace conflicting resource files."
+    )
+
+
+def _publish_file(complete, target, overwrite):
+    """Publish a complete file without exposing a partial destination."""
+    if overwrite:
+        os.replace(complete, target)
+    else:
+        try:
+            # Unlike replace(), link() cannot overwrite a concurrently created file.
+            os.link(complete, target)
+        except FileExistsError:
+            if _needs_install(complete, target, overwrite=False):
+                raise
+        complete.unlink()
+
+
+def _copy_file_atomically(source, target, overwrite):
+    target.parent.mkdir(parents=True, exist_ok=True)
+    out = tempfile.NamedTemporaryFile(
+        mode="wb", prefix=".robocasa-copy-", dir=target.parent, delete=False
+    )
+    temporary = Path(out.name)
+    try:
+        with out, source.open("rb") as src:
+            shutil.copyfileobj(src, out)
+            out.flush()
+            os.fsync(out.fileno())
+        shutil.copymode(source, temporary)
+        _publish_file(temporary, target, overwrite)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def copy_missing_files(
+    source, destination, *, overwrite=False, relative_paths=None, move=False
+):
+    """Install complete files; existing different content requires opt-in."""
+    source, destination = Path(source), Path(destination)
+    if relative_paths is None:
+        relative_paths = [
+            path.relative_to(source) for path in source.rglob("*") if path.is_file()
+        ]
+    pending = [
+        path
+        for path in relative_paths
+        if _needs_install(source / path, destination / path, overwrite)
+    ]
+    for path in pending:
+        target = destination / path
+        if move:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _publish_file(source / path, target, overwrite)
+        else:
+            _copy_file_atomically(source / path, target, overwrite)
+
+
+def download_is_complete(url, folder):
+    """Only skip a download whose installed file inventory is still present."""
+    folder = Path(folder)
+    try:
+        record = json.loads((folder / ".robocasa-download.json").read_text())
+        if record.get("url") != url or not record.get("files"):
+            return False
+        for name, size in record["files"].items():
+            relative = Path(name)
+            if relative.is_absolute() or ".." in relative.parts:
+                return False
+            path = folder.parent / relative
+            if not path.is_file() or path.stat().st_size != size:
+                return False
+        return True
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+
+
 def url_is_alive(url):
     """
     Checks that a given URL is reachable.
@@ -144,6 +237,7 @@ def download_and_extract_zip(
     prompt_before_download=False,
     delete_old_folder=False,
     message="Downloading...",
+    overwrite=False,
 ):
     assert url.endswith(".zip")
 
@@ -181,35 +275,70 @@ def download_and_extract_zip(
             print(colored("Skipping.\n", "yellow"))
             return
 
-    download_success = False
+    partial_path = download_path + ".part"
+    last_error = None
     for i in range(3):
         try:
             download_url(
                 url=url,
                 download_dir=download_dir,
-                fname=os.path.basename(download_path),
+                fname=os.path.basename(partial_path),
                 check_overwrite=False,
             )
-            download_success = True
+            with ZipFile(partial_path) as archive:
+                bad_member = archive.testzip()
+                if bad_member is not None:
+                    raise BadZipFile(f"CRC check failed: {bad_member}")
             break
-        except Exception:
+        except Exception as exc:
+            last_error = exc
             print("Error downloading after try #{}".format(i + 1))
-
-    if download_success is False:
-        print("Failed to download. Try again...")
-        return
+    else:
+        raise RuntimeError(
+            f"Asset download failed after 3 attempts: {folder}"
+        ) from last_error
 
     print(colored("Extracting...", "yellow"))
-    with ZipFile(download_path, "r") as zip_ref:
-        zip_ref.extractall(path=download_dir)
-
-    # delete zip file
-    os.remove(download_path)
+    with tempfile.TemporaryDirectory(
+        prefix=".robocasa-extract-", dir=download_dir
+    ) as stage:
+        with ZipFile(partial_path) as archive:
+            inventory = {}
+            for member in archive.infolist():
+                path = Path(member.filename)
+                if path.is_absolute() or ".." in path.parts:
+                    raise BadZipFile(f"Invalid asset path: {member.filename}")
+                if not member.is_dir():
+                    inventory[str(path)] = member.file_size
+            if not any(
+                len(Path(name).parts) > 1 and Path(name).parts[0] == Path(folder).name
+                for name in inventory
+            ):
+                raise BadZipFile(f"Archive has no payload for {Path(folder).name}")
+            archive.extractall(stage)
+        marker = Path(folder) / ".robocasa-download.json"
+        marker.unlink(missing_ok=True)
+        copy_missing_files(
+            stage,
+            download_dir,
+            overwrite=overwrite,
+            relative_paths=inventory,
+            move=True,
+        )
+        out = tempfile.NamedTemporaryFile(mode="w", dir=folder, delete=False)
+        temporary_marker = Path(out.name)
+        try:
+            with out:
+                json.dump({"url": url, "files": inventory}, out, sort_keys=True)
+            temporary_marker.replace(marker)
+        finally:
+            temporary_marker.unlink(missing_ok=True)
+    os.remove(partial_path)
 
     print(colored("Done.\n", "yellow"))
 
 
-def download_kitchen_assets(types):
+def download_kitchen_assets(types, registry=None, *, overwrite=False):
     ans = input("The script will download ~10 Gb of data. Proceed? (y/n) ")
     if ans == "y":
         print("Proceeding...")
@@ -217,7 +346,8 @@ def download_kitchen_assets(types):
         print("Aborting.")
         return
 
-    for ds_name, config in DOWNLOAD_ASSET_REGISTRY.items():
+    registry = DOWNLOAD_ASSET_REGISTRY if registry is None else registry
+    for ds_name, config in registry.items():
         if types is None:
             pass
         elif "all" in types:
@@ -226,11 +356,14 @@ def download_kitchen_assets(types):
         else:
             if ds_name not in types:
                 continue
-        download_and_extract_zip(**config)
+        download_and_extract_zip(**config, overwrite=overwrite)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--overwrite", action="store_true", help="replace conflicting resource files"
+    )
     parser.add_argument(
         "--type",
         type=str,
@@ -242,4 +375,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
     types = args.type
 
-    download_kitchen_assets(types)
+    download_kitchen_assets(types, overwrite=args.overwrite)

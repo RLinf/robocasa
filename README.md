@@ -65,6 +65,41 @@ RoboCasa works across all major computing platforms. The easiest way to set up i
    ```
 
 -------
+## External Asset Installation
+
+The `rpent-robocasa365` distribution provides an installer for an external,
+shareable asset directory:
+
+```sh
+robocasa-download-assets --assets-path ~/.robocasa/assets --no-macros -y
+export ROBOCASA_ASSETS_PATH=~/.robocasa/assets
+```
+
+It installs both the six downloaded collections and the package's bundled
+scene, arena and fixture files. Existing different files are reported as
+conflicts instead of overwritten. `--skip-existing` verifies the file
+inventory recorded after a successful download; nonempty directories and
+fixture skeletons alone are not complete downloads. Interrupted downloads
+must complete before running environments. Official attribution files are
+preserved. The local completion record is not a publisher-provided checksum.
+
+Resource files are published atomically; an interrupted copy does not leave a
+half-written final file. To repair conflicting files left by an earlier install,
+rerun the same command with `--overwrite`. This explicitly replaces resource
+files in the installation scope, takes precedence over `--skip-existing`, and
+does not remove unrelated files or whole directories. Without it, different
+existing content remains protected. The destination filesystem must support
+hard links for atomic no-overwrite publication. Catchable errors clean temporary
+files; a killed process may leave temporary files, but they do not block retries.
+
+Downloads validate the ZIP before extraction. Staged files are then published
+without copying their payload, so a new collection needs space for its archive
+and one unpacked copy, not two. Existing installations require additional space
+during replacement. The installer uses the ZIP inventory instead of rescanning
+the extracted tree. `--skip-existing` avoids downloading and comparing completed
+collections; unverified existing files still require content checks when their
+sizes match. Bundled static files are checked separately.
+
 ## Basic Usage
 
 ### Gym wrapper
